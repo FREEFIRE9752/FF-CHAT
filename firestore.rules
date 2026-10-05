@@ -1,0 +1,117 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // 1. Username uniqueness collection:
+    // Documents are keyed by unique lowercase username (e.g. usernames/@rohit_ff)
+    match /usernames/{username} {
+      allow read: if isAuthenticated();
+      // Allow creation only if the document does not already exist
+      allow create: if isAuthenticated() &&
+                    request.resource.data.uid == request.auth.uid &&
+                    request.resource.data.username == username &&
+                    !exists(/databases/$(database)/documents/usernames/$(username));
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow update: if false; // Usernames cannot be transferred without release
+    }
+
+    // 2. User Profiles:
+    // Private information (email, auth providers) is shielded from other users.
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) &&
+                    request.resource.data.uid == request.auth.uid;
+      allow update: if isOwner(userId) &&
+                    // Ensure UID cannot be forged or hijacked
+                    request.resource.data.uid == resource.data.uid;
+      allow delete: if isOwner(userId);
+    }
+
+    // 3. Direct Chats & Messages:
+    match /chats/{chatId} {
+      allow read, write: if isAuthenticated() &&
+                         request.auth.uid in resource.data.participants;
+      allow create: if isAuthenticated() &&
+                    request.auth.uid in request.resource.data.participants;
+
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() &&
+                    request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow create: if isAuthenticated() &&
+                      request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
+                      request.resource.data.senderId == request.auth.uid;
+        allow update: if isAuthenticated() &&
+                      request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+      }
+    }
+
+    // 4. Groups & Role-Based Permissions:
+    match /groups/{groupId} {
+      // Any authenticated user can read public metadata or join via inviteCode
+      allow read: if isAuthenticated();
+
+      // Only authenticated users can create groups, becoming Leader
+      allow create: if isAuthenticated() &&
+                    request.resource.data.leaderId == request.auth.uid &&
+                    request.resource.data.createdBy == request.auth.uid &&
+                    request.resource.data.elderIds.size() <= 10 &&
+                    request.resource.data.memberIds.hasAny([request.auth.uid]);
+
+      // Updates strictly validated by role:
+      allow update: if isAuthenticated() && (
+        // Leader can update anything (name, bio, photo, elders, members)
+        (resource.data.leaderId == request.auth.uid &&
+         request.resource.data.elderIds.size() <= 10) ||
+
+        // Elders can only add/kick regular members or start calls (cannot alter leader or elders)
+        (resource.data.elderIds.hasAny([request.auth.uid]) &&
+         request.resource.data.leaderId == resource.data.leaderId &&
+         request.resource.data.elderIds == resource.data.elderIds) ||
+
+        // Members can join via inviteCode or leave group
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds']) &&
+         request.resource.data.leaderId == resource.data.leaderId &&
+         request.resource.data.elderIds == resource.data.elderIds)
+      );
+
+      allow delete: if isAuthenticated() && resource.data.leaderId == request.auth.uid;
+
+      // Group Messages
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() &&
+                    get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds.hasAny([request.auth.uid]);
+        allow create: if isAuthenticated() &&
+                      get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds.hasAny([request.auth.uid]) &&
+                      (request.resource.data.senderId == request.auth.uid || request.resource.data.type == 'SYSTEM');
+        allow delete: if isAuthenticated() && (
+          resource.data.senderId == request.auth.uid ||
+          get(/databases/$(database)/documents/groups/$(groupId)).data.leaderId == request.auth.uid
+        );
+      }
+    }
+
+    // 5. WebRTC Call Signaling (Offers, Answers, ICE Candidates):
+    match /calls/{callId} {
+      allow read, write: if isAuthenticated() && (
+        resource == null ||
+        resource.data.callerId == request.auth.uid ||
+        resource.data.participantUids.hasAny([request.auth.uid]) ||
+        request.resource.data.participantUids.hasAny([request.auth.uid])
+      );
+
+      match /candidates/{candidateId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "FF CHAT",
+  "description": "Production-ready messaging app with real-time direct & group chat, 1GB file sharing, WebRTC voice/video calls, and elder group roles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

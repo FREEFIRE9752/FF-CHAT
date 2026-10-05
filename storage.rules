@@ -1,0 +1,37 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Maximum 1 GB upload rule (1,073,741,824 bytes)
+    function isUnder1GB() {
+      return request.resource.size <= 1024 * 1024 * 1024;
+    }
+
+    // User Avatar photos (max 10MB)
+    match /avatars/{userId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAuthenticated() &&
+                   request.auth.uid == userId &&
+                   request.resource.size <= 10 * 1024 * 1024 &&
+                   request.resource.contentType.matches('image/.*');
+    }
+
+    // Direct and Group Media (HD Photos, 4K Videos, APKs, Files up to 1 GB)
+    match /media/{allPaths=**} {
+      allow read: if isAuthenticated();
+      // Enforce authenticated users and strict 1 GB hard ceiling
+      allow write: if isAuthenticated() && isUnder1GB();
+    }
+
+    // Group Photo assets (max 15MB)
+    match /groups/{groupId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.resource.size <= 15 * 1024 * 1024;
+    }
+  }
+}
